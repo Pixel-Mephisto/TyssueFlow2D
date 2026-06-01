@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>TyssueFlow | Multi-Geometry Engine</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body { margin: 0; background: #0d1117; color: #f0f6fc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        .panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 15px; }
+        .btn { background: #238636; color: #fff; border: none; padding: 12px; border-radius: 6px; cursor: pointer; width: 100%; font-weight: bold; transition: background 0.2s; }
+        .btn:hover { filter: brightness(1.2); }
+        .btn-pause { background: #da3633; }
+        .slider-group { margin-bottom: 20px; }
+        .slider-group label { display: flex; justify-content: space-between; font-size: 13px; color: #8b949e; margin-bottom: 8px; font-weight: 600; }
+        input[type=range], select { width: 100%; cursor: pointer; accent-color: #58a6ff; background: #0d1117; color: #f0f6fc; border: 1px solid #30363d; padding: 5px; border-radius: 4px; }
+        .toggle-container { display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: #8b949e; font-weight: 600; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px dashed #30363d; }
+        .inspector-data { background: #0d1117; padding: 10px; margin-top: 5px; border-radius: 4px; border: 1px solid #30363d; font-family: monospace; font-size: 12px; line-height: 1.6; }
+        .conc-pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 4px; }
+        #app-container { display: flex; height: 100vh; gap: 15px; padding: 15px; box-sizing: border-box; }
+        #left-panel { width: 280px; display: flex; flex-direction: column; }
+        #center-panel { flex: 1; padding: 0; position: relative; overflow: hidden; background: #010409; }
+        #right-panel { width: 340px; overflow-y: auto; }
+        .mesh-cell { transition: fill 0.1s ease, fill-opacity 0.2s; }
+    </style>
+</head>
+<body>
+<div id="app-container">
+    <div class="panel" id="left-panel">
+        <h3 style="margin-top:0; color:#58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 10px;">TyssueFlow Engine</h3>
+        
+        <div class="slider-group">
+            <label>Grid Geometry</label>
+            <select id="grid-type">
+                <option value="hex">Hexagonal</option>
+                <option value="square">Square</option>
+            </select>
+        </div>
+
+        <div class="toggle-container">
+            <span>Periodic Boundary</span>
+            <input type="checkbox" id="pbc-toggle" style="cursor: pointer; width: 16px; height: 16px;">
+        </div>
+
+        <div class="slider-group">
+            <label><span>Rows</span><span id="rows-val" style="color:#58a6ff; font-family:monospace;">6</span></label>
+            <input type="range" id="rows-slider" min="2" max="20" step="1" value="6">
+        </div>
+        <div class="slider-group">
+            <label><span>Columns</span><span id="cols-val" style="color:#58a6ff; font-family:monospace;">6</span></label>
+            <input type="range" id="cols-slider" min="2" max="20" step="1" value="6">
+        </div>
+
+        <div class="slider-group" style="margin-top: 15px; border-top: 1px dashed #30363d; padding-top: 15px;">
+            <label><span>Trans-Coupling ($k_T$)</span><span id="kt-val" style="color:#58a6ff; font-family:monospace;">2.00 &times; 10⁻⁵</span></label>
+            <input type="range" id="kt-slider" min="0.1" max="10.0" step="0.1" value="2.0">
+        </div>
+
+        <div style="margin-top: auto;">
+            <button id="play-btn" class="btn">&#9654; Play Simulation</button>
+            <div id="status" style="font-size: 13px; color: #8b949e; margin-top: 12px; text-align: center; font-family: monospace; background: #0d1117; padding: 8px; border-radius: 4px; border: 1px solid #30363d;">Time: 0.0 mins</div>
+        </div>
+    </div>
+
+    <div class="panel" id="center-panel">
+        <svg id="hex-svg" width="100%" height="100%"></svg>
+    </div>
+
+    <div class="panel" id="right-panel">
+        <h3 style="margin-top:0; color:#58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 10px;">Topology Inspector</h3>
+        <p id="ins-msg" style="color:#8b949e; font-size: 13px; line-height: 1.5;">Select a <b style="color:#fcce25">Cell</b>.</p>
+        <div id="ins-content"></div>
+    </div>
+</div>
+
+<script>
+(function() {
+    let verts = {}, cells = [], edges = {}, currentTime = 0;
+    let isPlaying = false, animInterval = null, isPBC = false;
+    const params = { gN: 1400.0, gD: 1600.0, kC: 5e-4, gamma: 0.1, gammaI: 0.5, I0: 200.0, n: 2.0, L_N: 2.0, L_D: 0.0, kT: 2.0 * 1e-5 };
+    
+    const svg = document.getElementById('hex-svg');
+    const gCells = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    const gEdges = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    svg.appendChild(gCells); svg.appendChild(gEdges);
+    const magmaScale = d3.scaleSequential(d3.interpolateMagma).domain([0, 800]);
+
+    function initChem() {
+        return { N: 500 + Math.random()*400, D: 1200 + Math.random()*600, I: 10 + Math.random()*10 };
+    }
+
+    function generateMesh() {
+        const rows = parseInt(document.getElementById('rows-slider').value);
+        let cols = parseInt(document.getElementById('cols-slider').value);
+        const type = document.getElementById('grid-type').value;
+        isPBC = document.getElementById('pbc-toggle').checked;
+
+        verts = {}; cells = []; edges = {}; currentTime = 0;
+        let v_id = 1, e_cnt = 1;
+        const s = 1.0;
+        
+        const W = (type === 'hex') ? cols * 1.5 * s : cols * s;
+        const H = (type === 'hex') ? rows * s * Math.sqrt(3) : rows * s;
+
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                let pts = [];
+                if (type === 'hex') {
+                    const h = s * Math.sqrt(3), cx = c * s * 1.5, cy = r * h + (c % 2 === 1 ? h/2 : 0);
+                    pts = [[cx+s/2, cy+h/2], [cx+s, cy], [cx+s/2, cy-h/2], [cx-s/2, cy-h/2], [cx-s, cy], [cx-s/2, cy+h/2]];
+                } else {
+                    pts = [[c*s, r*s], [(c+1)*s, r*s], [(c+1)*s, (r+1)*s], [c*s, (r+1)*s]];
+                }
+
+                let vIds = [];
+                pts.forEach(pt => {
+                    let px = pt[0], py = pt[1];
+                    if(isPBC) { px %= W; if(px<0) px+=W; py %= H; if(py<0) py+=H; }
+                    
+                    let found = null;
+                    for (let id in verts) { 
+                        let dx = Math.abs(verts[id].x - px), dy = Math.abs(verts[id].y - py);
+                        if(isPBC) { dx = Math.min(dx, W-dx); dy = Math.min(dy, H-dy); }
+                        if (dx < 1e-3 && dy < 1e-3) { found = parseInt(id); break; }
+                    }
+                    if (!found) { verts[v_id] = { x: px, y: py }; vIds.push(v_id); v_id++; } else vIds.push(found);
+                });
+
+                let cEdges = [];
+                for (let i = 0; i < vIds.length; i++) {
+                    const v1 = vIds[i], v2 = vIds[(i + 1) % vIds.length];
+                    const pair = [v1, v2].sort().join('_');
+                    if (!edges[pair]) edges[pair] = { id: e_cnt++, v1, v2 };
+                    cEdges.push(edges[pair].id + (v1 < v2 ? 'a' : 'b'));
+                }
+
+                let chem = initChem();
+                cells.push({ id: cells.length+1, edges: cEdges, points: pts.map(p=>({x:p[0], y:p[1]})), vIds, ...chem });
+            }
+        }
+        
+        if(isPBC) {
+            Object.values(edges).forEach(e => {
+                if (Math.abs(verts[e.v1].x - verts[e.v2].x) > W/2 || Math.abs(verts[e.v1].y - verts[e.v2].y) > H/2) e.isWrapped = true;
+            });
+        }
+        buildDOM();
+    }
+
+    function performStep() {
+        const dt = 0.5, n = cells.length, adj = Array.from({length: n}, () => []);
+        cells.forEach((c1, i) => {
+            cells.forEach((c2, j) => {
+                if (i < j && c1.vIds.filter(v => c2.vIds.includes(v)).length >= 2) { adj[i].push(j); adj[j].push(i); }
+            });
+        });
+
+        for (let s = 0; s < 2; s++) {
+            const snap = cells.map(c => ({N: c.N, D: c.D, I: c.I}));
+            cells.forEach((c, i) => {
+                const sD = adj[i].reduce((a, j) => a + snap[j].D, 0), sN = adj[i].reduce((a, j) => a + snap[j].N, 0);
+                const hN = (Math.pow(params.I0, 2) + 2 * Math.pow(c.I, 2)) / (Math.pow(params.I0, 2) + Math.pow(c.I, 2));
+                const hD = (Math.pow(params.I0, 2)) / (Math.pow(params.I0, 2) + Math.pow(c.I, 2));
+                
+                c.N += (params.gN * hN - params.kC*c.N*c.D - params.kT*c.N*sD - params.gamma*c.N) * dt;
+                c.D += (params.gD * hD - params.kC*c.N*c.D - params.kT*c.D*sN - params.gamma*c.D) * dt;
+                c.I += (params.kT * c.N * sD - params.gammaI * c.I) * dt;
+                c.N = Math.max(0, c.N); c.D = Math.max(0, c.D); c.I = Math.max(0, c.I);
+            });
+            currentTime += dt;
+        }
+        document.getElementById('status').innerText = `Time: ${currentTime.toFixed(1)} mins`;
+        cells.forEach(c => { const p = document.getElementById(`cell-${c.id}`); if(p) p.setAttribute('fill', magmaScale(c.I)); });
+    }
+
+    function buildDOM() {
+        gCells.innerHTML = ''; gEdges.innerHTML = '';
+        const svgW = svg.clientWidth || 600, svgH = svg.clientHeight || 500;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        cells.forEach(c => c.points.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); }));
+        
+        const sc = Math.min(svgW/(maxX-minX+2), svgH/(maxY-minY+2)) * 0.8;
+        const ox = (svgW - (maxX-minX)*sc)/2 - minX*sc, oy = (svgH - (maxY-minY)*sc)/2 - minY*sc;
+
+        cells.forEach(cell => {
+            const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+            poly.setAttribute('id', `cell-${cell.id}`);
+            poly.setAttribute('points', cell.points.map(p => `${p.x*sc+ox},${p.y*sc+oy}`).join(' '));
+            poly.setAttribute('fill', magmaScale(cell.I)); poly.setAttribute('stroke', '#30363d'); poly.style.cursor = 'pointer';
+            poly.onclick = () => {
+                document.getElementById('ins-content').innerHTML = `<div class='inspector-data'><b>Cell ${cell.id}</b><br>N: ${cell.N.toFixed(1)}<br>D: ${cell.D.toFixed(1)}<br>NICD: ${cell.I.toFixed(1)}</div>`;
+            };
+            gCells.appendChild(poly);
+        });
+
+        Object.values(edges).forEach(e => {
+            if(e.isWrapped) return;
+            const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            l.setAttribute('x1', verts[e.v1].x*sc+ox); l.setAttribute('y1', verts[e.v1].y*sc+oy);
+            l.setAttribute('x2', verts[e.v2].x*sc+ox); l.setAttribute('y2', verts[e.v2].y*sc+oy);
+            l.setAttribute('stroke', '#30363d'); l.setAttribute('stroke-width', '0.5');
+            gEdges.appendChild(l);
+        });
+    }
+
+    document.getElementById('rows-slider').oninput = function() { document.getElementById('rows-val').innerText = this.value; generateMesh(); };
+    document.getElementById('cols-slider').oninput = function() { document.getElementById('cols-val').innerText = this.value; generateMesh(); };
+    document.getElementById('grid-type').onchange = generateMesh;
+    document.getElementById('pbc-toggle').onchange = generateMesh;
+    document.getElementById('kt-slider').oninput = function() { params.kT = this.value * 1e-5; document.getElementById('kt-val').innerHTML = `${parseFloat(this.value).toFixed(2)} &times; 10⁻⁵`; };
+    
+    document.getElementById('play-btn').onclick = function() {
+        isPlaying = !isPlaying;
+        if(isPlaying) { this.innerHTML = 'Pause'; setInterval(performStep, 50); } else location.reload();
+    };
+    generateMesh();
+})();
+</script>
+</body>
+</html>
